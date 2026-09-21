@@ -260,6 +260,19 @@ document.addEventListener('error', e => { const i = e.target; if (i.tagName === 
 const isFuture = a => a.appointment_date > todayISO() || (a.appointment_date === todayISO() && toMin(a.start_time) > nowMin());
 const isActive = s => s === 'scheduled' || s === 'confirmed';
 const digits = s => String(s||'').replace(/\D/g,'');
+const normPhone = p => { const d = digits(p); return (d.length === 10 || d.length === 11) ? '55' + d : d; };
+const fmtPhone = p => { let d = digits(p); if (d.startsWith('55') && d.length >= 12) d = d.slice(2);
+  if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`; return p || ''; };
+const validPhone = p => /^55\d{10,11}$/.test(normPhone(p));
+const custName = a => a.profiles?.name || a.guest_name || 'Cliente';
+const custPhone = a => a.profiles?.phone || a.guest_phone || '';
+const loadGuest = () => { try { return JSON.parse(localStorage.getItem('dc_guest') || '{}'); } catch (e) { return {}; } };
+const saveGuest = g => { try { localStorage.setItem('dc_guest', JSON.stringify(g)); } catch (e) {} };
+document.addEventListener('input', e => { const el = e.target; if (!el.dataset || el.dataset.mask !== 'phone') return;
+  let d = digits(el.value); if (d.startsWith('55') && d.length > 11) d = d.slice(2); d = d.slice(0, 11);
+  const cut_ = d.length > 10 ? 7 : 6;
+  el.value = d.length > 6 ? `(${d.slice(0,2)}) ${d.slice(2, cut_)}-${d.slice(cut_)}` : d.length > 2 ? `(${d.slice(0,2)}) ${d.slice(2)}` : d; });
 const waLink = (phone, msg='') => `https://wa.me/${digits(phone).length<=11 ? '55'+digits(phone) : digits(phone)}${msg?'?text='+encodeURIComponent(msg):''}`;
 
 const ICONS = {
@@ -351,8 +364,9 @@ function menu() {
   const r = role();
   if (r === 'admin') return [['#/admin','Dashboard','dash'],['#/admin/agenda','Agenda','cal'],['#/admin/agendamentos','Agendamentos','list'],['#/admin/clientes','Clientes','users'],['#/admin/barbeiros','Barbeiros','user'],['#/admin/servicos','Serviços','scissors'],['#/admin/config','Configurações','gear']];
   if (r === 'barber') return [['#/barbeiro','Dashboard','dash'],['#/barbeiro/agenda','Minha agenda','cal'],['#/barbeiro/horarios','Meus horários','clock'],['#/barbeiro/bloqueios','Bloqueios','block'],['#/barbeiro/perfil','Perfil','user']];
-  if (r === 'customer') return [['#/','Início','home'],['#/agendar','Agendar','scissors'],['#/meus','Meus agendamentos','cal'],['#/perfil','Meu perfil','user']];
-  return [['#/','Início','home'],['#/agendar','Agendar','scissors'],['#/login','Entrar','login']];
+  const pub = [['#/','Início','home'],['#/agendar','Agendar','scissors'],['#/meus','Meus agendamentos','cal']];
+  if (r === 'customer') return pub;
+  return pub.concat([['#/login','Equipe','login']]);
 }
 function renderNav() {
   const cur = location.hash.split('?')[0] || '#/';
@@ -521,43 +535,23 @@ ACT['home-barber'] = el => { S.book = {step:1, barberId:el.dataset.id, preBarber
 const authShell = (title, inner) => page('', `<div style="max-width:440px;margin:0 auto"><h1 style="font-size:2rem">${title}</h1><div class="card">${inner}</div></div>`);
 route(/^\/login$/, null, async () => {
   if (S.user) { location.hash = homeFor(); return; }
-  authShell('Entrar', `<form data-form="login" novalidate>
+  authShell('Área da equipe', `<p class="muted small">Acesso para administrador e barbeiros. Clientes não precisam de conta: é só agendar.</p><form data-form="login" novalidate>
     <label class="field"><span>E-mail</span><input name="email" type="email" autocomplete="email" required></label>
     <label class="field"><span>Senha</span><input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn gold block" type="submit">Entrar</button></form>
-    <p class="small center" style="margin:16px 0 0"><a href="#/recuperar">Esqueci minha senha</a> · <a href="#/cadastro">Criar conta</a></p>`);
+    <p class="small center" style="margin:16px 0 0"><a href="#/recuperar">Esqueci minha senha</a></p>`);
 });
 FORMS.login = async f => {
   if (!f.email || !f.password) return toast('Informe e-mail e senha.', 'err');
   const {error} = await SB.auth.signInWithPassword({email:f.email.trim(), password:f.password});
   if (error) return toast(error.message.includes('Invalid login') ? 'E-mail ou senha incorretos.' : error.message.includes('not confirmed') ? 'Confirme seu e-mail antes de entrar.' : error.message, 'err');
   await loadUser();
+  if (!S.profile) { await SB.auth.signOut(); S.user = null; return toast('Login feito, mas não foi possível carregar seu perfil. Tente novamente em instantes.', 'err'); }
   const next = S.next; S.next = null;
-  location.hash = next || homeFor();
+  renderNav(); location.hash = next || homeFor();
   toast('Bem-vindo!', 'ok');
 };
-route(/^\/cadastro$/, null, async () => {
-  if (S.user) { location.hash = homeFor(); return; }
-  authShell('Criar conta', `<form data-form="signup" novalidate>
-    <label class="field"><span>Nome completo</span><input name="name" autocomplete="name" required></label>
-    <label class="field"><span>Telefone / WhatsApp</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(11) 99999-9999" required></label>
-    <label class="field"><span>E-mail</span><input name="email" type="email" autocomplete="email" required></label>
-    <label class="field"><span>Senha (mínimo 6 caracteres)</span><input name="password" type="password" autocomplete="new-password" minlength="6" required></label>
-    <button class="btn gold block" type="submit">Criar conta</button></form>
-    <p class="small center" style="margin:16px 0 0">Já tem conta? <a href="#/login">Entrar</a></p>`);
-});
-FORMS.signup = async f => {
-  const name = f.name.trim(), phone = f.phone.trim(), email = f.email.trim();
-  if (name.length < 3) return toast('Informe seu nome completo.', 'err');
-  if (digits(phone).length < 10) return toast('Informe um telefone válido com DDD.', 'err');
-  if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Informe um e-mail válido.', 'err');
-  if (f.password.length < 6) return toast('A senha precisa ter ao menos 6 caracteres.', 'err');
-  const {data, error} = await SB.auth.signUp({email, password:f.password, options:{data:{name, phone}}});
-  if (error) return toast(error.message.includes('already') ? 'Este e-mail já tem cadastro. Tente entrar.' : error.message, 'err');
-  if (!data.session) { authShell('Confirme seu e-mail', `<p>Enviamos um link de confirmação para <b>${esc(email)}</b>. Depois de confirmar, é só entrar.</p><a class="btn gold block" href="#/login">Ir para o login</a>`); return; }
-  await loadUser(); toast('Conta criada!', 'ok');
-  const next = S.next; S.next = null; location.hash = next || homeFor();
-};
+route(/^\/cadastro$/, null, async () => { location.hash = '#/meus'; });
 route(/^\/recuperar$/, null, async () => {
   authShell('Recuperar senha', `<form data-form="forgot" novalidate><p class="muted small">Informe seu e-mail. Enviaremos um link para criar uma nova senha.</p>
     <label class="field"><span>E-mail</span><input name="email" type="email" autocomplete="email" required></label>
@@ -617,7 +611,7 @@ function drawBook() {
   const b = B(), n = b.step;
   const bar = `<div class="steps">${[1,2,3,4,5].map(i => `<i class="${i<=n?'on':''}"></i>`).join('')}</div>`;
   const back = n > 1 ? `<button class="btn ghost sm" data-act="bk-back">← Voltar</button>` : '';
-  let inner = '';
+  let inner = ''; const G = loadGuest();
   if (n === 1) {
     inner = `<h2>1. Escolha o serviço</h2>` + (SVC.length ? `<div class="grid">${SVC.map(s => `
       <button class="card tap ${b.serviceId===s.id?'sel':''}" data-act="bk-service" data-id="${s.id}"><div class="flex between top"><h3>${esc(s.name)}</h3><span class="price">${brl(s.price)}</span></div>
@@ -635,9 +629,12 @@ function drawBook() {
     inner = `<h2>5. Confirme seu agendamento</h2><div class="card"><dl class="sum">
       <dt>Serviço</dt><dd>${esc(s.name)}</dd><dt>Barbeiro</dt><dd>${esc(bar_?.name||'')}</dd><dt>Data</dt><dd style="text-transform:capitalize">${esc(fmtDate(b.date))}</dd>
       <dt>Horário</dt><dd>${esc(b.time)} (${s.duration_minutes} min)</dd><dt>Valor</dt><dd>${brl(s.price)}</dd></dl></div>
-      <label class="field" style="margin-top:14px"><span>Observações (opcional)</span><textarea id="bk-notes" maxlength="300" placeholder="Ex.: prefiro máquina na lateral"></textarea></label>
-      <p class="muted small">Cancelamentos permitidos até ${S.settings.cancel_min_hours} horas antes do horário.</p>
-      ${S.user ? `<button class="btn gold block sticky-cta" data-act="bk-confirm">Confirmar agendamento</button>` : `<div class="notice">Entre ou crie sua conta para concluir. Sua escolha fica guardada.</div><div class="row"><a class="btn gold" href="#/login" data-act="bk-needlogin">Entrar</a><a class="btn" href="#/cadastro" data-act="bk-needlogin">Criar conta</a></div>`}`;
+      <div class="card" style="margin-top:14px"><h3>Seus dados</h3>
+        <label class="field"><span>Nome completo</span><input id="bk-name" autocomplete="name" maxlength="80" value="${esc(G.name||'')}"></label>
+        <label class="field"><span>Telefone / WhatsApp</span><input id="bk-phone" data-mask="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(19) 99999-9999" value="${esc(G.phone||'')}"></label>
+        <label class="field" style="margin-bottom:0"><span>Observações (opcional)</span><textarea id="bk-notes" maxlength="300" placeholder="Ex.: prefiro máquina na lateral"></textarea></label></div>
+      <p class="muted small" style="margin-top:12px">Não precisa criar conta. Para ver ou cancelar depois, use “Meus agendamentos” com o mesmo nome e telefone. Cancelamentos permitidos até ${S.settings.cancel_min_hours} horas antes do horário.</p>
+      <button class="btn gold block sticky-cta" data-act="bk-confirm">Confirmar agendamento</button>`;
   }
   const off = BOOK_OFFLINE ? `<div class="notice">Prévia sem conexão com o banco: dá para ver as etapas, mas horários e confirmação só funcionam no site publicado.</div>` : '';
   page('Agendar horário', off + bar + inner + `<div style="margin-top:18px">${back}</div>`);
@@ -647,7 +644,6 @@ function drawBook() {
 ACT['bk-back'] = () => { B().step = Math.max(1, B().step - 1); drawBook(); };
 ACT['bk-service'] = el => { const b = B(); b.serviceId = el.dataset.id; b.date = b.time = null; b.cal = null; b.step = b.preBarber ? 3 : 2; b.preBarber = false; drawBook(); };
 ACT['bk-barber'] = el => { B().barberId = el.dataset.id; B().date = B().time = null; B().step = 3; B().cal = null; drawBook(); };
-ACT['bk-needlogin'] = el => { S.next = '#/agendar'; location.hash = el.getAttribute('href'); };
 function drawCal() {
   const b = B(); const today = todayISO();
   if (!b.cal) { const [y,m] = (b.date || today).split('-'); b.cal = {y:+y, m:+m}; }
@@ -684,27 +680,30 @@ async function drawSlots() {
 ACT['bk-slot'] = el => { B().time = el.dataset.t; B().barberPick = el.dataset.b; B().step = 5; drawBook(); };
 ACT['bk-confirm'] = async el => {
   const b = B(); const s = SVC.find(x => x.id === b.serviceId);
-  const ok = await confirmBox('Confirmar agendamento?', `${s.name} em ${fmtShort(b.date)} às ${b.time}.`, 'Confirmar');
+  const name = $('#bk-name').value.trim(), phone = $('#bk-phone').value.trim();
+  if (name.length < 3) return toast('Informe seu nome completo.', 'err');
+  if (!validPhone(phone)) return toast('Informe um telefone válido com DDD.', 'err');
+  const ok = await confirmBox('Confirmar agendamento?', `${s.name} em ${fmtShort(b.date)} às ${b.time}, em nome de ${name}.`, 'Confirmar');
   if (!ok) return;
   el.disabled = true; el.textContent = 'Reservando…';
-  const {data, error} = await SB.rpc('create_appointment', {p_barber_id:b.barberPick, p_service_id:b.serviceId, p_appointment_date:b.date, p_start_time:b.time, p_notes:$('#bk-notes')?.value.trim() || null});
+  const {data, error} = await SB.rpc('create_guest_appointment', {p_name:name, p_phone:phone, p_barber_id:b.barberPick, p_service_id:b.serviceId, p_date:b.date, p_start_time:b.time, p_notes:$('#bk-notes')?.value.trim() || null});
   if (error) {
     slotCache = {}; toast(errMsg(error), 'err');
     if (/reservado|bloqueado|trabalha|intervalo|passou/i.test(error.message)) { b.time = null; b.step = 4; drawBook(); }
     else { el.disabled = false; el.textContent = 'Confirmar agendamento'; }
     return;
   }
-  S.book = {step:1}; slotCache = {}; location.hash = '#/confirmacao/' + data.id;
+  saveGuest({name, phone}); S.mine = {name, phone:normPhone(phone)}; S.last = data; S.book = {step:1}; slotCache = {}; location.hash = '#/confirmacao';
 };
-route(/^\/confirmacao\/([\w-]+)$/, ['customer','barber','admin'], async ([id]) => {
-  const {data:a, error} = await SB.from('appointments').select('*, services(name,price,duration_minutes), barbers(name)').eq('id', id).maybeSingle();
-  if (error || !a) throw new Error('Agendamento não encontrado.');
+route(/^\/confirmacao$/, null, async () => {
+  const a = S.last; if (!a) { location.hash = '#/'; return; }
   page('', `<div style="max-width:480px;margin:0 auto" class="center">
     <div class="confirm-ok">${ic('check')}</div><h1 style="font-size:2rem">Agendamento confirmado!</h1>
     <div class="card" style="text-align:left;margin:20px 0"><dl class="sum">
-      <dt>Cliente</dt><dd>${esc(S.profile?.name||'')}</dd><dt>Serviço</dt><dd>${esc(a.services?.name||'')}</dd><dt>Barbeiro</dt><dd>${esc(a.barbers?.name||'')}</dd>
-      <dt>Data</dt><dd style="text-transform:capitalize">${esc(fmtDate(a.appointment_date))}</dd><dt>Horário</dt><dd>${hm(a.start_time)} às ${hm(a.end_time)}</dd>
-      <dt>Valor</dt><dd>${brl(a.services?.price)}</dd><dt>Endereço</dt><dd>${esc(BRAND.address)}</dd></dl></div>
+      <dt>Cliente</dt><dd>${esc(a.guest_name||'')}</dd><dt>Serviço</dt><dd>${esc(a.service||'')}</dd><dt>Barbeiro</dt><dd>${esc(a.barber||'')}</dd>
+      <dt>Data</dt><dd style="text-transform:capitalize">${esc(fmtDate(a.date))}</dd><dt>Horário</dt><dd>${hm(a.start_time)} às ${hm(a.end_time)}</dd>
+      <dt>Valor</dt><dd>${brl(a.price)}</dd><dt>Endereço</dt><dd>${esc(BRAND.address)}</dd></dl></div>
+    <p class="muted small">Para ver ou cancelar, use “Meus agendamentos” com o mesmo nome e telefone.</p>
     <a class="btn gold block" href="#/meus">Ver meus agendamentos</a></div>`);
 });
 
@@ -712,56 +711,41 @@ route(/^\/confirmacao\/([\w-]+)$/, ['customer','barber','admin'], async ([id]) =
    MEUS AGENDAMENTOS E PERFIL (cliente)
    ============================================================ */
 const APPT_SEL = '*, services(name,price,duration_minutes), barbers(name)';
-function canCancelClient(a) {
-  if (!isActive(a.status)) return false;
-  const days = (new Date(a.appointment_date+'T12:00:00Z') - new Date(todayISO()+'T12:00:00Z')) / 86400000;
-  return days*1440 + toMin(a.start_time) - nowMin() >= S.settings.cancel_min_hours * 60;
+const mineCard = (a, cancel) => `<div class="card"><div class="flex between top wrap"><div><h3 style="margin-bottom:4px">${esc(a.service||'Serviço removido')}</h3>
+  <div class="muted small" style="text-transform:capitalize">${esc(fmtDate(a.date))} · ${hm(a.start_time)}–${hm(a.end_time)}</div></div>${pill(a.status)}</div>
+  <div class="flex wrap small muted" style="margin-top:10px"><span>${ic('user')} ${esc(a.barber||'')}</span><span>${a.duration||''} min</span><span>${brl(a.price)}</span></div>
+  ${cancel ? (a.cancelable ? `<button class="btn danger sm" style="margin-top:12px" data-act="cancel-mine" data-id="${a.id}">Cancelar agendamento</button>` : (isActive(a.status) ? `<p class="small muted" style="margin:12px 0 0">Cancelamento online permitido até ${S.settings.cancel_min_hours} horas antes. Fale com a barbearia: ${esc(BRAND.phone)}.</p>` : '')) : ''}</div>`;
+function drawLookup(prefill) {
+  const g = prefill || loadGuest();
+  page('Meus agendamentos', `<div class="card" style="max-width:440px"><p class="muted">Informe o nome e o telefone usados no agendamento.</p>
+    <form data-form="lookup" novalidate>
+      <label class="field"><span>Nome completo</span><input name="name" autocomplete="name" maxlength="80" value="${esc(g.name||'')}" required></label>
+      <label class="field"><span>Telefone / WhatsApp</span><input name="phone" data-mask="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(19) 99999-9999" value="${esc(g.phone ? fmtPhone(g.phone) : '')}" required></label>
+      <button class="btn gold block" type="submit">Ver meus agendamentos</button></form></div>`);
 }
-const apptCard = (a, cancel) => `<div class="card"><div class="flex between top wrap"><div><h3 style="margin-bottom:4px">${esc(a.services?.name||'Serviço removido')}</h3>
-  <div class="muted small" style="text-transform:capitalize">${esc(fmtDate(a.appointment_date))} · ${hm(a.start_time)}–${hm(a.end_time)}</div></div>${pill(a.status)}</div>
-  <div class="flex wrap small muted" style="margin-top:10px"><span>${ic('user')} ${esc(a.barbers?.name||'')}</span><span>${a.services?.duration_minutes||''} min</span><span>${brl(a.services?.price)}</span></div>
-  ${cancel ? (canCancelClient(a) ? `<button class="btn danger sm" style="margin-top:12px" data-act="cancel-mine" data-id="${a.id}">Cancelar agendamento</button>` : (isActive(a.status) ? `<p class="small muted" style="margin:12px 0 0">Cancelamento online permitido até ${S.settings.cancel_min_hours} horas antes. Fale com a barbearia pelo WhatsApp.</p>` : '')) : ''}</div>`;
-route(/^\/meus$/, ['customer','barber','admin'], async () => {
-  const {data, error} = await SB.from('appointments').select(APPT_SEL).eq('customer_id', S.user.id).order('appointment_date', {ascending:false}).order('start_time', {ascending:false});
-  if (error) throw error;
-  const up = (data||[]).filter(a => isActive(a.status) && isFuture(a)).reverse(), hist = (data||[]).filter(a => !up.includes(a));
-  page('Meus agendamentos', `
+async function showMine() {
+  const m = S.mine;
+  const {data, error} = await SB.rpc('guest_list_appointments', {p_name:m.name, p_phone:m.phone});
+  if (error || !data?.length) { S.mine = null; drawLookup(m); toast(error ? errMsg(error) : 'Não encontramos agendamentos com esse nome e telefone. Confira os dados.', 'err'); return; }
+  const up = data.filter(a => isActive(a.status) && (a.date > todayISO() || (a.date === todayISO() && toMin(a.start_time) > nowMin()))).reverse(), hist = data.filter(a => !up.includes(a));
+  page('Meus agendamentos', `<div class="flex between wrap" style="margin-bottom:12px"><span class="muted small">${esc(m.name)} · ${esc(fmtPhone(m.phone))}</span><button class="btn ghost sm" data-act="mine-exit">Trocar dados</button></div>
     <p class="muted small">Cancelamentos permitidos até ${S.settings.cancel_min_hours} horas antes do horário.</p>
-    <h2>Próximos</h2>${up.length ? `<div class="grid">${up.map(a => apptCard(a, true)).join('')}</div>` : `<div class="empty">Você não tem horários marcados.<br><a class="btn gold sm" style="margin-top:12px" href="#/agendar">Agendar horário</a></div>`}
-    <h2 style="margin-top:34px">Histórico</h2>${hist.length ? `<div class="grid">${hist.map(a => apptCard(a, false)).join('')}</div>` : `<div class="empty">Seu histórico aparecerá aqui.</div>`}`);
-});
+    <h2>Próximos</h2>${up.length ? `<div class="grid">${up.map(a => mineCard(a, true)).join('')}</div>` : `<div class="empty">Você não tem horários marcados.<br><a class="btn gold sm" style="margin-top:12px" href="#/agendar">Agendar horário</a></div>`}
+    <h2 style="margin-top:34px">Histórico</h2>${hist.length ? `<div class="grid">${hist.map(a => mineCard(a, false)).join('')}</div>` : `<div class="empty">Seu histórico aparecerá aqui.</div>`}`);
+}
+route(/^\/meus$/, null, async () => { if (S.mine) await showMine(); else drawLookup(); });
+FORMS.lookup = async f => {
+  if (f.name.trim().length < 3) return toast('Informe o nome completo usado no agendamento.', 'err');
+  if (!validPhone(f.phone)) return toast('Informe um telefone válido com DDD.', 'err');
+  S.mine = {name:f.name.trim(), phone:normPhone(f.phone)}; saveGuest({name:S.mine.name, phone:S.mine.phone});
+  await showMine();
+};
+ACT['mine-exit'] = () => { S.mine = null; drawLookup(); };
 ACT['cancel-mine'] = async el => {
   if (!await confirmBox('Cancelar agendamento?', 'O horário volta a ficar disponível para outros clientes.', 'Cancelar agendamento', true)) return;
-  const {error} = await SB.rpc('cancel_appointment', {p_appointment_id: el.dataset.id});
+  const {error} = await SB.rpc('guest_cancel_appointment', {p_id:el.dataset.id, p_name:S.mine.name, p_phone:S.mine.phone});
   if (error) return toast(errMsg(error), 'err');
-  toast('Agendamento cancelado.', 'ok'); router();
-};
-route(/^\/perfil$/, ['customer','barber','admin'], async () => {
-  const {count:total} = await SB.from('appointments').select('id', {count:'exact', head:true}).eq('customer_id', S.user.id);
-  const {count:done} = await SB.from('appointments').select('id', {count:'exact', head:true}).eq('customer_id', S.user.id).eq('status', 'completed');
-  const p = S.profile;
-  page('Meu perfil', `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
-    <div class="card"><div class="flex" style="margin-bottom:16px">${avatar(p.avatar_url, p.name, 'lg')}<div><h3 style="margin:0">${esc(p.name)}</h3><span class="muted small">${total||0} agendamentos · ${done||0} concluídos</span></div></div>
-      <form data-form="profile" novalidate>
-        <label class="field"><span>Nome completo</span><input name="name" value="${esc(p.name)}" required></label>
-        <label class="field"><span>Telefone / WhatsApp</span><input name="phone" type="tel" value="${esc(p.phone||'')}" required></label>
-        <label class="field"><span>E-mail</span><input name="email" type="email" value="${esc(S.user.email)}" required></label>
-        <label class="field"><span>Link da foto (opcional)</span><input name="avatar_url" type="url" value="${esc(p.avatar_url||'')}" placeholder="https://…"></label>
-        <button class="btn gold block" type="submit">Salvar alterações</button></form></div>
-    <div class="card"><h3>Trocar senha</h3><form data-form="reset" novalidate><label class="field"><span>Nova senha</span><input name="password" type="password" minlength="6" autocomplete="new-password"></label><button class="btn block" type="submit">Alterar senha</button></form>
-      <hr style="border:0;border-top:1px solid var(--line);margin:22px 0"><button class="btn danger block" data-act="logout">Sair da conta</button></div></div>`);
-});
-FORMS.profile = async f => {
-  if (f.name.trim().length < 3) return toast('Informe seu nome completo.', 'err');
-  if (digits(f.phone).length < 10) return toast('Informe um telefone válido com DDD.', 'err');
-  const {error} = await SB.from('profiles').update({name:f.name.trim(), phone:f.phone.trim(), avatar_url:f.avatar_url.trim() || null}).eq('id', S.user.id);
-  if (error) return toast(errMsg(error), 'err');
-  if (f.email.trim() !== S.user.email) {
-    const r = await SB.auth.updateUser({email:f.email.trim()});
-    if (r.error) return toast(r.error.message, 'err');
-    toast('Confirme o novo e-mail pelo link que enviamos.', 'ok');
-  } else toast('Perfil atualizado.', 'ok');
-  await loadUser(); renderNav();
+  toast('Agendamento cancelado.', 'ok'); await showMine();
 };
 
 /* ============================================================
@@ -800,12 +784,12 @@ function dayModel(m) {
   return {rows, live, free, busy, cancelled:m.ap.filter(a => a.status === 'cancelled')};
 }
 function apptBlock(a, actions=true) {
-  const c = a.profiles;
+  const c = {name:custName(a), phone:custPhone(a)};
   const acts = actions ? `<div class="appt-actions">
     ${a.status === 'scheduled' ? `<button class="btn sm" data-act="st" data-st="confirmed" data-id="${a.id}">Confirmar</button>` : ''}
     ${isActive(a.status) ? `<button class="btn sm" data-act="st" data-st="completed" data-id="${a.id}">Concluir</button><button class="btn sm" data-act="st" data-st="no_show" data-id="${a.id}">Ausente</button><button class="btn danger sm" data-act="st-cancel" data-id="${a.id}">Cancelar</button>` : ''}</div>` : '';
   return `<div class="flex between top wrap"><div><b>${hm(a.start_time)}–${hm(a.end_time)} · ${esc(c?.name||'Cliente')}</b><div class="small muted">${esc(a.services?.name||'')} · ${a.services?.duration_minutes||''} min${a.notes ? ' · “' + esc(a.notes) + '”' : ''}</div>
-    ${c?.phone ? `<div class="small"><a href="tel:${esc(digits(c.phone))}">${esc(c.phone)}</a> · <a href="${esc(waLink(c.phone))}" target="_blank" rel="noopener">WhatsApp</a></div>` : ''}</div>${pill(a.status)}</div>${acts}`;
+    ${c?.phone ? `<div class="small"><a href="tel:${esc(digits(c.phone))}">${esc(fmtPhone(c.phone))}</a> · <a href="${esc(waLink(c.phone))}" target="_blank" rel="noopener">WhatsApp</a></div>` : ''}</div>${pill(a.status)}</div>${acts}`;
 }
 function timelineHtml(model, {actions=true, showBarber=false}={}) {
   const rows = model.rows.filter(r => r.type !== 'cover').map(r => {
@@ -815,7 +799,7 @@ function timelineHtml(model, {actions=true, showBarber=false}={}) {
     if (r.type === 'lock') return `<div class="tl-row tl-lock">${time}<div class="tl-body">${esc(r.label)}${r.block && actions ? `<span class="spacer"></span><button class="btn sm ghost" data-act="del-block" data-id="${r.block.id}">Remover</button>` : ''}</div></div>`;
     return `<div class="tl-row tl-off">${time}<div class="tl-body">${esc(r.label)}</div></div>`;
   }).join('');
-  const canc = model.cancelled.length ? `<p class="small muted" style="margin:10px 4px 0">Cancelados: ${model.cancelled.map(a => `${hm(a.start_time)} ${esc(a.profiles?.name||'')}`).join(' · ')}</p>` : '';
+  const canc = model.cancelled.length ? `<p class="small muted" style="margin:10px 4px 0">Cancelados: ${model.cancelled.map(a => `${hm(a.start_time)} ${esc(custName(a))}`).join(' · ')}</p>` : '';
   return `<div class="tl">${rows || '<div class="empty" style="border:0">Sem expediente neste dia.</div>'}</div>${canc}`;
 }
 ACT.st = async el => {
@@ -849,7 +833,7 @@ route(/^\/barbeiro$/, ['barber'], async () => {
       <div class="card stat"><b>${m.live.length}</b><span>clientes hoje</span></div>
       <div class="card stat"><b>${m.free}</b><span>horários livres (30 min)</span></div>
       <div class="card stat"><b>${m.busy}</b><span>horários ocupados</span></div>
-      <div class="card stat"><b>${next ? hm(next.start_time) : '—'}</b><span>${next ? 'próximo: ' + esc(next.profiles?.name||'') : 'sem próximo cliente'}</span></div></div>
+      <div class="card stat"><b>${next ? hm(next.start_time) : '—'}</b><span>${next ? 'próximo: ' + esc(custName(next)) : 'sem próximo cliente'}</span></div></div>
     <h2 style="text-transform:capitalize">${esc(fmtDate(date))}</h2>${timelineHtml(m)}`);
 });
 route(/^\/barbeiro\/agenda$/, ['barber'], async (_, q) => { if (needBarber()) await drawAgenda(S.barber.id, q, '#/barbeiro/agenda'); });
@@ -865,7 +849,7 @@ async function drawAgenda(barberId, q, base) {
   const {data, error} = await SB.from('appointments').select(APPT_FULL).eq('barber_id', barberId).gte('appointment_date', ws).lte('appointment_date', we).order('start_time');
   if (error) throw error;
   const cols = Array.from({length:7}, (_, i) => addDays(ws, i)).map(d => { const l = (data||[]).filter(a => a.appointment_date === d);
-    return `<div class="card daycol"><h3><a href="${base}?v=dia&d=${d}" style="color:inherit">${esc(fmtShort(d))}</a></h3>${l.length ? l.map(a => `<div class="mini ${a.status==='cancelled'?'cancelled':''}"><b>${hm(a.start_time)}</b> ${esc(a.profiles?.name||'')}<br><span class="muted">${esc(a.services?.name||'')} · ${STATUS[a.status]}</span></div>`).join('') : '<span class="muted small">Sem agendamentos</span>'}</div>`; }).join('');
+    return `<div class="card daycol"><h3><a href="${base}?v=dia&d=${d}" style="color:inherit">${esc(fmtShort(d))}</a></h3>${l.length ? l.map(a => `<div class="mini ${a.status==='cancelled'?'cancelled':''}"><b>${hm(a.start_time)}</b> ${esc(custName(a))}<br><span class="muted">${esc(a.services?.name||'')} · ${STATUS[a.status]}</span></div>`).join('') : '<span class="muted small">Sem agendamentos</span>'}</div>`; }).join('');
   page('Agenda', nav + `<div class="weekcols">${cols}</div>`);
 }
 document.addEventListener('change', e => { const el = e.target.closest('[data-act-change=goto]'); if (el && el.value) location.hash = `${el.dataset.base}?v=${el.dataset.mode}&d=${el.value}`; });
@@ -1003,7 +987,7 @@ route(/^\/admin\/agenda$/, ['admin'], async (_, q) => {
   if (error) throw error;
   const days = Array.from({length: mode === 'dia' ? 1 : 7}, (_, i) => addDays(from, i));
   page('Agenda geral', head + `<div class="weekcols">${days.map(d => { const l = (data||[]).filter(a => a.appointment_date === d), k = st ? [] : (bl.data||[]).filter(x => x.date === d);
-    return `<div class="card daycol"><h3>${esc(fmtShort(d))}</h3>${l.map(a => `<div class="mini ${a.status==='cancelled'?'cancelled':''}"><b>${hm(a.start_time)}</b> ${esc(a.profiles?.name||'')}<br><span class="muted">${esc(a.barbers?.name||'')} · ${esc(a.services?.name||'')} · ${STATUS[a.status]}</span></div>`).join('')}
+    return `<div class="card daycol"><h3>${esc(fmtShort(d))}</h3>${l.map(a => `<div class="mini ${a.status==='cancelled'?'cancelled':''}"><b>${hm(a.start_time)}</b> ${esc(custName(a))}<br><span class="muted">${esc(a.barbers?.name||'')} · ${esc(a.services?.name||'')} · ${STATUS[a.status]}</span></div>`).join('')}
       ${k.map(x => `<div class="mini" style="border-left-color:var(--danger)"><b>${hm(x.start_time)}</b> Bloqueio · ${esc(x.barbers?.name||'')}<br><span class="muted">${esc(x.reason||'')}</span></div>`).join('')}
       ${!l.length && !k.length ? '<span class="muted small">Nada por aqui</span>' : ''}</div>`; }).join('')}</div>`);
 });
@@ -1020,25 +1004,36 @@ route(/^\/admin\/agendamentos$/, ['admin'], async (_, q) => {
     <label class="field" style="margin:0"><span>Status</span><select name="s"><option value="">Todos</option>${Object.entries(STATUS).map(([k,v]) => `<option value="${k}" ${k===q.s?'selected':''}>${v}</option>`).join('')}</select></label>
     <button class="btn gold" type="submit">Filtrar</button></form>
     ${data.length ? `<div class="tablewrap"><table><thead><tr><th>Data</th><th>Cliente</th><th>Serviço</th><th>Barbeiro</th><th>Status</th><th></th></tr></thead><tbody>${data.map(a => `<tr>
-      <td>${esc(fmtShort(a.appointment_date))}<br><span class="muted small">${hm(a.start_time)}–${hm(a.end_time)}</span></td><td>${esc(a.profiles?.name||'')}<br><span class="muted small">${esc(a.profiles?.phone||'')}</span></td>
+      <td>${esc(fmtShort(a.appointment_date))}<br><span class="muted small">${hm(a.start_time)}–${hm(a.end_time)}</span></td><td>${esc(custName(a))}<br><span class="muted small">${esc(fmtPhone(custPhone(a)))}</span></td>
       <td>${esc(a.services?.name||'')}<br><span class="muted small">${brl(a.services?.price)}</span></td><td>${esc(a.barbers?.name||'')}</td><td>${pill(a.status)}</td>
       <td class="right">${isActive(a.status) ? `<div class="appt-actions" style="justify-content:flex-end">${a.status==='scheduled'?`<button class="btn sm" data-act="st" data-st="confirmed" data-id="${a.id}">Confirmar</button>`:''}<button class="btn sm" data-act="st" data-st="completed" data-id="${a.id}">Concluir</button><button class="btn sm" data-act="st" data-st="no_show" data-id="${a.id}">Ausente</button><button class="btn danger sm" data-act="st-cancel" data-id="${a.id}">Cancelar</button></div>` : ''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">Nenhum agendamento neste filtro.</div>`}
     ${data.length === 300 ? '<p class="muted small">Mostrando os 300 mais recentes. Refine o filtro para ver outros.</p>' : ''}`);
 });
 
 route(/^\/admin\/clientes$/, ['admin'], async (_, q) => {
-  page('Clientes', `<input id="csearch" type="search" placeholder="Buscar por nome, telefone ou e-mail" value="${esc(q.q||'')}" style="margin-bottom:16px"><div id="clist">${loading()}</div>`);
-  const run = async () => {
-    const term = ($('#csearch').value || '').replace(/[%,()]/g, ' ').trim();
-    let qy = SB.from('profiles').select('*').eq('role', 'customer').order('created_at', {ascending:false}).limit(100);
-    if (term) qy = qy.or(`name.ilike.%${term}%,phone.ilike.%${term}%,email.ilike.%${term}%`);
-    const {data, error} = await qy; if (!$('#clist')) return;
-    $('#clist').innerHTML = error ? `<div class="empty">${esc(errMsg(error))}</div>` : data.length ? `<div class="tablewrap"><table><thead><tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>Cadastro</th><th></th></tr></thead><tbody>${data.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.phone||'')}</td><td>${esc(c.email||'')}</td><td>${new Date(c.created_at).toLocaleDateString('pt-BR',{timeZone:TZ})}</td><td class="right"><button class="btn sm" data-act="client-hist" data-id="${c.id}" data-name="${esc(c.name)}">Histórico</button></td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">Nenhum cliente encontrado.</div>`;
+  const [p, g] = await Promise.all([
+    SB.from('profiles').select('*').eq('role', 'customer').order('created_at', {ascending:false}).limit(500),
+    SB.from('appointments').select('guest_name,guest_phone,created_at').not('guest_phone', 'is', null).order('created_at', {ascending:false}).limit(2000)
+  ]);
+  if (p.error || g.error) throw p.error || g.error;
+  const map = new Map();
+  (g.data||[]).forEach(x => { const k = x.guest_phone, c = map.get(k);
+    if (c) { c.count++; c.since = x.created_at; } else map.set(k, {kind:'phone', id:k, name:x.guest_name, phone:k, email:'', since:x.created_at, count:1}); });
+  (p.data||[]).forEach(x => { if (x.phone && map.has(normPhone(x.phone))) return; map.set('u' + x.id, {kind:'user', id:x.id, name:x.name, phone:x.phone||'', email:x.email||'', since:x.created_at, count:null}); });
+  const all = [...map.values()].sort((a, b) => String(b.since).localeCompare(String(a.since)));
+  page('Clientes', `<input id="csearch" type="search" placeholder="Buscar por nome, telefone ou e-mail" value="${esc(q.q||'')}" style="margin-bottom:16px"><div id="clist"></div>`);
+  const run = () => {
+    const term = ($('#csearch').value || '').trim().toLowerCase(), td = digits(term);
+    const list = all.filter(c => !term || String(c.name||'').toLowerCase().includes(term) || String(c.email||'').toLowerCase().includes(term) || (td && digits(c.phone).includes(td))).slice(0, 200);
+    if (!$('#clist')) return;
+    $('#clist').innerHTML = list.length ? `<div class="tablewrap"><table><thead><tr><th>Nome</th><th>Telefone</th><th>E-mail</th><th>Cliente desde</th><th></th></tr></thead><tbody>${list.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(fmtPhone(c.phone))}</td><td>${esc(c.email||'')}</td><td>${new Date(c.since).toLocaleDateString('pt-BR',{timeZone:TZ})}</td><td class="right"><button class="btn sm" data-act="client-hist" data-kind="${c.kind}" data-id="${esc(c.id)}" data-name="${esc(c.name)}">Histórico</button></td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">Nenhum cliente encontrado.</div>`;
   };
-  let t; $('#csearch').addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 300); }); run();
+  let t; $('#csearch').addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 200); }); run();
 });
 ACT['client-hist'] = async el => {
-  const {data, error} = await SB.from('appointments').select(APPT_SEL).eq('customer_id', el.dataset.id).order('appointment_date', {ascending:false}).order('start_time', {ascending:false});
+  let qy = SB.from('appointments').select(APPT_SEL).order('appointment_date', {ascending:false}).order('start_time', {ascending:false});
+  qy = el.dataset.kind === 'phone' ? qy.eq('guest_phone', el.dataset.id) : qy.eq('customer_id', el.dataset.id);
+  const {data, error} = await qy;
   if (error) return toast(errMsg(error), 'err');
   modal(`<h3>${esc(el.dataset.name)}</h3><p class="muted small">${data.length} agendamento(s)</p>${data.length ? `<div class="stack">${data.map(a => `<div class="card" style="padding:12px"><div class="flex between wrap"><b>${esc(fmtShort(a.appointment_date))} · ${hm(a.start_time)}</b>${pill(a.status)}</div><span class="muted small">${esc(a.services?.name||'')} com ${esc(a.barbers?.name||'')} · ${brl(a.services?.price)}</span></div>`).join('')}</div>` : '<div class="empty">Sem histórico.</div>'}<button class="btn block" style="margin-top:16px" data-close="no">Fechar</button>`, {wide:true});
 };
